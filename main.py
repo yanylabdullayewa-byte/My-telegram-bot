@@ -24,16 +24,22 @@ def home():
 def run_flask():
     app.run(host='0.0.0.0', port=10000)
 
-# TikTok ??in ??rite API funksi?asy (IP bloky a?lamak ??in)
 def get_tiktok_data(url):
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
-    # 1-nji synany?yk: TikWM API
+    # 1. Gysga linki (vt.tiktok.com) doly url-a ?w?rmek
+    try:
+        r = requests.get(url, headers=headers, allow_redirects=True, timeout=5)
+        full_url = r.url
+    except:
+        full_url = url
+
+    # 2. TikWM API-a ugratmak
     try:
         api_url = "https://tikwm.com/api/"
-        res = requests.get(api_url, params={"url": url, "hd": "1"}, headers=headers, timeout=10).json()
+        res = requests.get(api_url, params={"url": full_url, "hd": "1"}, headers=headers, timeout=10).json()
         if res.get("code") == 0 and "data" in res:
             data = res["data"]
             return {
@@ -44,23 +50,21 @@ def get_tiktok_data(url):
     except Exception as e:
         print(f"TikWM Error: {e}")
 
-    # 2-nji synany?yk (?ti?a?lyk): LoFi TikTok API
+    # 3. Ikinji ?ti?a?lyk API (SSSTik alternative)
     try:
-        backup_url = f"https://api.douyin.wtf/api?url={url}"
-        res = requests.get(backup_url, headers=headers, timeout=10).json()
-        video_url = res.get("nwm_video_url") or res.get("video_data", {}).get("nwm_video_url")
-        if video_url:
+        api_url2 = f"https://api.tiklydown.eu.org/api/download?url={full_url}"
+        res2 = requests.get(api_url2, headers=headers, timeout=10).json()
+        if "video" in res2:
             return {
-                "video": video_url,
-                "audio": res.get("music", {}).get("play_url"),
-                "title": res.get("desc", "TikTok Video")
+                "video": res2["video"].get("noWatermark") or res2["video"].get("watermark"),
+                "audio": res2.get("music", {}).get("url"),
+                "title": res2.get("title", "TikTok Video")
             }
     except Exception as e:
-        print(f"Backup TikTok Error: {e}")
+        print(f"TiklyDown Error: {e}")
 
     return None
 
-# Gala? sa?tlar ??in yt-dlp funksi?asy
 def download_yt_dlp(url: str, download_type: str = "video"):
     for f in glob.glob("downloaded_*"):
         try:
@@ -99,15 +103,14 @@ def download_yt_dlp(url: str, download_type: str = "video"):
 
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
-    await message.answer("Salam! Link ugrady? (TikTok, Instagram, YouTube, Pornhub), men media g???rip bere?in.")
+    await message.answer("Salam! Link ugrady? (TikTok, Instagram, YouTube we ?.m), men media g???rip bere?in.")
 
 @dp.message(F.text.startswith("http"))
 async def handle_link(message: types.Message):
     url = message.text.strip()
-    wait_msg = await message.answer("?? ??klen??r, bir az garаsyñ..")
+    wait_msg = await message.answer("?? ??klen??r, bir az gara?y?...")
 
     try:
-        # 1. Eger TikTok bolsa TikWM API ulan?arys
         if "tiktok.com" in url:
             tt_data = get_tiktok_data(url)
             if tt_data and tt_data.get("video"):
@@ -127,7 +130,6 @@ async def handle_link(message: types.Message):
                 await wait_msg.edit_text("? TikTok videosy alynmady.")
                 return
 
-        # 2. Galan ?hli sa?tlar ??in yt-dlp ulan?arys
         loop = asyncio.get_event_loop()
         file_path, title = await loop.run_in_executor(None, download_yt_dlp, url, "video")
 
@@ -154,7 +156,6 @@ async def handle_link(message: types.Message):
         print(f"Error: {e}")
         await wait_msg.edit_text("? ?al?y?lyk d?r?di.")
 
-# Knopkalar ??in handlers
 @dp.callback_query(F.data == "aud_no")
 async def handle_no(call: types.CallbackQuery):
     await call.message.edit_reply_markup(reply_markup=None)
@@ -178,7 +179,6 @@ async def handle_yt_audio(call: types.CallbackQuery):
     await call.message.edit_reply_markup(reply_markup=None)
     status_msg = await call.message.answer("?? A?dym g???ril??r...")
     
-    # Linki caption-dan almak
     url = call.message.caption
     for entity in call.message.caption_entities or []:
         if entity.type == "url":
