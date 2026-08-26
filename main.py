@@ -221,59 +221,27 @@ async def start_handler(message: types.Message) -> None:
 
 
 @dp.message(F.text)
-async def handle_message(message: types.Message) -> None:
-    raw_url = (message.text or "").strip()
-    if not raw_url.lower().startswith(("http://", "https://")):
-        await message.answer("TikTok, Instagram ýa-da YouTube ssylkasyny iberiň.")
-        return
-
-    platform = supported_platform(raw_url)
-    if not platform:
-        await message.answer("Diňe TikTok, Instagram we YouTube ssylkalary goldanylýar.")
-        return
-
-    job_id = uuid.uuid4().hex[:16]
-    job = DownloadJob(
-        chat_id=message.chat.id,
-        raw_url=raw_url,
-        platform=platform,
-        video_ready=asyncio.Event(),
-    )
-    jobs[job_id] = job
-    await message.answer(
-        "Wideo ýüklenýär. Wideoň aýdymyny hem isleýärsiňizmi?",
-        reply_markup=audio_keyboard(job_id),
-    )
-
-    try:
-        if platform == "TikTok":
-            result = await asyncio.to_thread(get_tiktok, raw_url)
-            if not result:
-                await message.answer("TikTok-dan wideo alyp bolmady.")
-                return
-            video_url, title, music_url = result
-            job.tiktok_music_url = music_url
-            await message.answer_video(video=video_url, caption=caption(title))
-            return
-
-        file_path, title, job_dir = await asyncio.to_thread(
-            download_with_ytdlp, raw_url
-        )
-        job.video_result = (file_path, title, job_dir)
-        await message.answer_video(
-            video=FSInputFile(file_path),
-            caption=caption(title),
-        )
-    except Exception:
-        logger.exception("Video download failed for %s", platform)
-        await message.answer(
-            "Wideo ýüklenmedi. Ssylka nädogry bolup biler ýa-da faýl 50 MB-dan ulydyr."
-        )
-    finally:
-        job.video_ready.set()
-        if platform != "TikTok" and job.video_result:
-            shutil.rmtree(job.video_result[2], ignore_errors=True)
-        jobs.pop(job_id, None)
+def handle_message(message: types.Message):
+    url = message.text.strip()
+    
+    if "tiktok.com" in url:
+        msg = message.answer("Wait...")
+        res = get_tiktok(url)
+        
+        if res:
+            video_url, title, music_url = res
+            try:
+                # Wideony g?ni linkden Telegram-a ugrat?arys
+                message.answer_video(video=video_url, caption=f"?? {title}")
+                
+                # Eger a?dymy hem bar bolsa, ony hem ugrat?arys
+                if music_url:
+                    message.answer_audio(audio=music_url, caption="?? TikTok Audio")
+            except Exception as e:
+                print(f"Send error: {e}")
+                message.answer("Videony Telegram-a ugratmakda ?al?y?lyk ?ykdy.")
+        else:
+            message.answer("Videony skachat edip bolmady. Linki barla?.")
 
 
 @dp.callback_query(F.data.startswith("audio:"))
