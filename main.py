@@ -25,7 +25,7 @@ def run_flask():
     app.run(host='0.0.0.0', port=10000)
 
 # TikTok ??in ??rite API funksi?asy (IP bloky a?lamak ??in)
- def get_tiktok_data(url):
+def get_tiktok_data(url):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
