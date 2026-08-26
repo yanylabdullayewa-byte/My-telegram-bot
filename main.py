@@ -86,12 +86,33 @@ def caption(title: str) -> str:
 
 
 def get_tiktok(raw_url: str) -> tuple[str, str, str | None] | None:
-    response = requests.get(
-        "https://www.tikwm.com/api/",
-        params={"url": raw_url, "hd": "1"},
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
-        timeout=20,
-    )
+    # API URL-i Render-d?ki Environment Variable-dan al?ar, bolmasa standart adres ulanyl?ar
+    api_url = os.getenv("TIKTOK_API_URL", "https://tikwm.com/api/")
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json"
+    }
+    params = {
+        "url": raw_url,
+        "hd": "1"
+    }
+    
+    try:
+        response = requests.get(api_url, params=params, headers=headers, timeout=15)
+        if response.status_code == 200:
+            res_json = response.json()
+            if res_json.get("code") == 0 and "data" in res_json:
+                data = res_json["data"]
+                
+                # Eger video bar bolsa:
+                video_url = data.get("play") or data.get("wmplay")
+                title = data.get("title", "TikTok Video")
+                
+                if video_url:
+                    return video_url, title, None
+    except Exception as e:
+        print(f"TikTok API Error: {e}")
     response.raise_for_status()
     payload = response.json()
     data = payload.get("data") or {}
