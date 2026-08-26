@@ -25,19 +25,39 @@ def run_flask():
     app.run(host='0.0.0.0', port=10000)
 
 # TikTok ??in ??rite API funksi?asy (IP bloky a?lamak ??in)
-def get_tiktok_data(url):
+ def get_tiktok_data(url):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+    
+    # 1-nji synany?yk: TikWM API
     try:
-        api_url = f"https://tikwm.com/api/?url={url}"
-        res = requests.get(api_url, timeout=10).json()
-        if res.get("code") == 0:
+        api_url = "https://tikwm.com/api/"
+        res = requests.get(api_url, params={"url": url, "hd": "1"}, headers=headers, timeout=10).json()
+        if res.get("code") == 0 and "data" in res:
             data = res["data"]
             return {
-                "video": data.get("play"),
+                "video": data.get("play") or data.get("wmplay"),
                 "audio": data.get("music"),
                 "title": data.get("title", "TikTok Video")
             }
     except Exception as e:
-        print(f"TikTok API Error: {e}")
+        print(f"TikWM Error: {e}")
+
+    # 2-nji synany?yk (?ti?a?lyk): LoFi TikTok API
+    try:
+        backup_url = f"https://api.douyin.wtf/api?url={url}"
+        res = requests.get(backup_url, headers=headers, timeout=10).json()
+        video_url = res.get("nwm_video_url") or res.get("video_data", {}).get("nwm_video_url")
+        if video_url:
+            return {
+                "video": video_url,
+                "audio": res.get("music", {}).get("play_url"),
+                "title": res.get("desc", "TikTok Video")
+            }
+    except Exception as e:
+        print(f"Backup TikTok Error: {e}")
+
     return None
 
 # Gala? sa?tlar ??in yt-dlp funksi?asy
@@ -84,7 +104,7 @@ async def start_cmd(message: types.Message):
 @dp.message(F.text.startswith("http"))
 async def handle_link(message: types.Message):
     url = message.text.strip()
-    wait_msg = await message.answer("?? ??klen??r, bir az gara?y?...")
+    wait_msg = await message.answer("?? ??klen??r, bir az garаsyñ..")
 
     try:
         # 1. Eger TikTok bolsa TikWM API ulan?arys
