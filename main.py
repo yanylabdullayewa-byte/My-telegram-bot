@@ -86,36 +86,41 @@ def caption(title: str) -> str:
 
 
 def get_tiktok(raw_url: str) -> tuple[str, str, str | None] | None:
-    # API URL-i Render-d?ki Environment Variable-dan al?ar, bolmasa standart adres ulanyl?ar
-    api_url = os.getenv("TIKTOK_API_URL", "https://tikwm.com/api/")
-    
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "application/json"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     }
-    params = {
-        "url": raw_url,
-        "hd": "1"
-    }
-    
+
+    # 1. ?ol: TikWM API arkaly barla?arys
     try:
-        response = requests.get(api_url, params=params, headers=headers, timeout=15)
+        api_url = "https://tikwm.com/api/"
+        response = requests.get(api_url, params={"url": raw_url, "hd": "1"}, headers=headers, timeout=10)
         if response.status_code == 200:
             res_json = response.json()
             if res_json.get("code") == 0 and "data" in res_json:
                 data = res_json["data"]
-                
-                # Eger video bar bolsa:
                 video_url = data.get("play") or data.get("wmplay")
+                music_url = data.get("music")
                 title = data.get("title", "TikTok Video")
-                
                 if video_url:
-                    return video_url, title, None
+                    return video_url, title, music_url
     except Exception as e:
-        print(f"TikTok API Error: {e}")
-        
-    return None
+        print(f"TikWM API Error: {e}")
 
+    # 2. ?ol (?ti?a?lyk): Eger TikWM i?lemes?, LoFi API arkaly barla?arys
+    try:
+        backup_url = f"https://api.douyin.wtf/api?url={raw_url}"
+        response = requests.get(backup_url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            res_json = response.json()
+            video_url = res_json.get("nwm_video_url") or res_json.get("video_data", {}).get("nwm_video_url")
+            title = res_json.get("desc", "TikTok Video")
+            if video_url:
+                return video_url, title, None
+    except Exception as e:
+        print(f"Backup API Error: {e}")
+
+    return None
+    
 def download_with_ytdlp(raw_url: str) -> tuple[Path, str, Path]:
     job_dir = Path(tempfile.mkdtemp(prefix="telegram-video-"))
     output_template = str(job_dir / "%(id)s.%(ext)s")
