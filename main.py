@@ -1,312 +1,155 @@
-import asyncio
-import logging
 import os
-import re
-import shutil
-import tempfile
-import uuid
-from dataclasses import dataclass
-from pathlib import Path
-from threading import Thread
-from urllib.parse import urlparse
-
-import requests
-import yt_dlp
-from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import CommandStart
-from aiogram.types import (
-    CallbackQuery,
-    FSInputFile,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
+import glob
+import asyncio
 from flask import Flask
+from threading import Thread
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import FSInputFile
+import yt_dlp
 
-MAX_FILE_BYTES = 50 * 1024 * 1024
-OWNER_LINK = os.getenv("BOT_OWNER_LINK", "t.me/ikramromanow")
-PORT = int(os.getenv("PORT", "8080"))
+TOKEN = os.environ.get("BOT_TOKEN")
 
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
-logger = logging.getLogger("telegram-video-bot")
-
-app = Flask(__name__)
-
-
-@app.get("/")
-def home() -> tuple[str, int]:
-    return "Telegram video bot is running.", 200
-
-
-@app.get("/healthz")
-def healthz() -> tuple[dict[str, str], int]:
-    return {"status": "ok"}, 200
-
-
-@app.get("/api/healthz")
-def api_healthz() -> tuple[dict[str, str], int]:
-    return {"status": "ok"}, 200
-
-
-def run_health_server() -> None:
-    app.run(host="0.0.0.0", port=PORT, threaded=True, use_reloader=False)
-
-
-def start_health_server() -> None:
-    Thread(target=run_health_server, daemon=True, name="health-server").start()
-
-
-def supported_platform(raw_url: str) -> str | None:
-    try:
-        parsed = urlparse(raw_url)
-    except ValueError:
-        return None
-    if parsed.scheme not in {"http", "https"}:
-        return None
-
-    hostname = (parsed.hostname or "").lower().removeprefix("www.")
-    if hostname == "tiktok.com" or hostname.endswith(".tiktok.com"):
-        return "TikTok"
-    if hostname == "instagram.com" or hostname.endswith(".instagram.com"):
-        return "Instagram"
-    if (
-        hostname == "youtube.com"
-        or hostname.endswith(".youtube.com")
-        or hostname == "youtu.be"
-    ):
-        return "YouTube"
-    return None
-
-
-def caption(title: str) -> str:
-    clean_title = re.sub(r"\s+", " ", title).strip()[:900] or "Video"
-    return f"{clean_title}\n\nBot eýesi: {OWNER_LINK}"
-
-
-def get_tiktok(raw_url: str) -> tuple[str, str, str | None] | None:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    }
-
-    # 1. ?ol: TikWM API arkaly barla?arys
-    try:
-        api_url = "https://tikwm.com/api/"
-        response = requests.get(api_url, params={"url": raw_url, "hd": "1"}, headers=headers, timeout=10)
-        if response.status_code == 200:
-            res_json = response.json()
-            if res_json.get("code") == 0 and "data" in res_json:
-                data = res_json["data"]
-                video_url = data.get("play") or data.get("wmplay")
-                music_url = data.get("music")
-                title = data.get("title", "TikTok Video")
-                if video_url:
-                    return video_url, title, music_url
-    except Exception as e:
-        print(f"TikWM API Error: {e}")
-
-    # 2. ?ol (?ti?a?lyk): Eger TikWM i?lemes?, LoFi API arkaly barla?arys
-    try:
-        backup_url = f"https://api.douyin.wtf/api?url={raw_url}"
-        response = requests.get(backup_url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            res_json = response.json()
-            video_url = res_json.get("nwm_video_url") or res_json.get("video_data", {}).get("nwm_video_url")
-            title = res_json.get("desc", "TikTok Video")
-            if video_url:
-                return video_url, title, None
-    except Exception as e:
-        print(f"Backup API Error: {e}")
-
-    return None
-    
-def download_with_ytdlp(raw_url: str) -> tuple[Path, str, Path]:
-    job_dir = Path(tempfile.mkdtemp(prefix="telegram-video-"))
-    output_template = str(job_dir / "%(id)s.%(ext)s")
-    options = {
-        "format": "best[ext=mp4][filesize<50M]/best[filesize<50M]/best",
-        "outtmpl": output_template,
-        "merge_output_format": "mp4",
-        "max_filesize": "50M",
-        "noplaylist": True,
-        "restrictfilenames": True,
-        "quiet": True,
-        "no_warnings": True,
-    }
-    try:
-        with yt_dlp.YoutubeDL(options) as downloader:
-            info = downloader.extract_info(raw_url, download=True)
-        files = [
-            item
-            for item in job_dir.iterdir()
-            if item.is_file() and not item.name.endswith((".part", ".ytdl"))
-        ]
-        if not files:
-            raise RuntimeError("yt-dlp did not create a video file")
-        file_path = files[0]
-        if file_path.stat().st_size > MAX_FILE_BYTES:
-            raise ValueError("video is larger than Telegram's 50 MB limit")
-        return file_path, info.get("title") or "Video", job_dir
-    except Exception:
-        shutil.rmtree(job_dir, ignore_errors=True)
-        raise
-
-
-def download_audio_with_ytdlp(raw_url: str) -> tuple[Path, Path]:
-    job_dir = Path(tempfile.mkdtemp(prefix="telegram-audio-"))
-    output_template = str(job_dir / "%(id)s.%(ext)s")
-    options = {
-        "format": "bestaudio[filesize<50M]/bestaudio",
-        "outtmpl": output_template,
-        "max_filesize": "50M",
-        "noplaylist": True,
-        "restrictfilenames": True,
-        "quiet": True,
-        "no_warnings": True,
-    }
-    try:
-        with yt_dlp.YoutubeDL(options) as downloader:
-            downloader.extract_info(raw_url, download=True)
-        files = [
-            item
-            for item in job_dir.iterdir()
-            if item.is_file() and not item.name.endswith((".part", ".ytdl"))
-        ]
-        if not files:
-            raise RuntimeError("yt-dlp did not create an audio file")
-        if files[0].stat().st_size > MAX_FILE_BYTES:
-            raise ValueError("audio is larger than Telegram's 50 MB limit")
-        return files[0], job_dir
-    except Exception:
-        shutil.rmtree(job_dir, ignore_errors=True)
-        raise
-
-
+bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# Render ??in Flask Server
+app = Flask(__name__)
 
-@dataclass
-class DownloadJob:
-    chat_id: int
-    raw_url: str
-    platform: str
-    video_ready: asyncio.Event
-    video_result: tuple[Path, str, Path] | None = None
-    tiktok_music_url: str | None = None
-    audio_requested: bool = False
-    audio_sent: bool = False
+@app.route('/')
+def home():
+    return "Bot 24/7 Alive!"
 
+def run_flask():
+    app.run(host='0.0.0.0', port=10000)
 
-jobs: dict[str, DownloadJob] = {}
-
-
-def audio_keyboard(job_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="Hawa", callback_data=f"audio:yes:{job_id}"),
-                InlineKeyboardButton(text="Ýok", callback_data=f"audio:no:{job_id}"),
-            ]
-        ]
-    )
-
-
-@dp.message(CommandStart())
-async def start_handler(message: types.Message) -> None:
-    await message.answer(
-        "Salam! TikTok, Instagram ýa-da YouTube ssylkasyny iberiň, "
-        "men wideosyny ýüklemäge synanyşaryn."
-    )
-
-
-@dp.message(F.text)
-def handle_message(message: types.Message):
-    url = message.text.strip()
-    
-    if "tiktok.com" in url:
-        msg = message.answer("Wait...")
-        res = get_tiktok(url)
-        
-        if res:
-            video_url, title, music_url = res
-            try:
-                # Wideony g?ni linkden Telegram-a ugrat?arys
-                message.answer_video(video=video_url, caption=f"?? {title}")
-                
-                # Eger a?dymy hem bar bolsa, ony hem ugrat?arys
-                if music_url:
-                    message.answer_audio(audio=music_url, caption="?? TikTok Audio")
-            except Exception as e:
-                print(f"Send error: {e}")
-                message.answer("Videony Telegram-a ugratmakda ?al?y?lyk ?ykdy.")
-        else:
-            message.answer("Videony skachat edip bolmady. Linki barla?.")
-
-
-@dp.callback_query(F.data.startswith("audio:"))
-async def audio_choice(callback: CallbackQuery) -> None:
-    parts = (callback.data or "").split(":")
-    if len(parts) != 3:
-        await callback.answer("Bu düwme indi güýjünde däl.", show_alert=True)
-        return
-
-    choice, job_id = parts[1], parts[2]
-    job = jobs.get(job_id)
-    if not job:
-        await callback.answer("Wideo işi tamamlandy ýa-da möhleti geçdi.", show_alert=True)
-        return
-
-    await callback.answer("Saýlawyňyz kabul edildi.")
-    await callback.message.edit_reply_markup(reply_markup=None)
-    if choice == "no":
-        return
-
-    job.audio_requested = True
-    await job.video_ready.wait()
-    if job.audio_sent:
-        return
-    job.audio_sent = True
-
-    try:
-        if job.platform == "TikTok":
-            if not job.tiktok_music_url:
-                await callback.message.answer("Bu TikTok wideoda aýdym çeşmesi tapylmady.")
-                return
-            await callback.message.answer_audio(
-                audio=job.tiktok_music_url,
-                caption="Wideonyň aýdym ýazgysy",
-            )
-            return
-
-        audio_path, audio_dir = await asyncio.to_thread(
-            download_audio_with_ytdlp, job.raw_url
-        )
+# Wideo we ses g???rmek ??in yt-dlp funksi?asy
+def download_media(url: str, download_type: str = "video"):
+    # ??ki galan wagtla?yn fa?llary arassalamak
+    for f in glob.glob("downloaded_*"):
         try:
-            await callback.message.answer_audio(
-                audio=FSInputFile(audio_path),
-                caption="Wideonyň aýdym ýazgysy",
-            )
-        finally:
-            shutil.rmtree(audio_dir, ignore_errors=True)
-    except Exception:
-        logger.exception("Audio download failed for %s", job.platform)
-        await callback.message.answer("Wideonyň aýdymyny alyp bolmady.")
+            os.remove(f)
+        except:
+            pass
 
+    outtmpl = "downloaded_%(id)s.%(ext)s"
+    
+    if download_type == "audio":
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': 'downloaded_audio.%(ext)s',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'quiet': True,
+            'no_warnings': True,
+        }
+    else:
+        ydl_opts = {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'outtmpl': 'downloaded_video.mp4',
+            'quiet': True,
+            'no_warnings': True,
+        }
 
-async def main() -> None:
-    token = os.getenv("BOT_TOKEN")
-    if not token:
-        raise RuntimeError("BOT_TOKEN Replit Secret hökman goşulmaly.")
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        title = info.get('title', 'Media')
+        
+    if download_type == "audio":
+        files = glob.glob("downloaded_audio.*")
+        return (files[0] if files else None), title
+    else:
+        files = glob.glob("downloaded_video.*")
+        return (files[0] if files else None), title
 
-    start_health_server()
-    bot = Bot(token=token)
-    logger.info("Starting Telegram bot")
+# /start komandasy
+@dp.message(Command("start"))
+async def start_cmd(message: types.Message):
+    await message.answer("Salam! TikTok, Instagram, YouTube ?a-da Pornhub linkini ugrat, men sa?a media g???rip bere?in.")
+
+# Link gelende i?le??n b?l?m
+@dp.message(F.text.startswith("http"))
+async def handle_link(message: types.Message):
+    url = message.text.strip()
+    wait_msg = await message.answer("?? Media serwere g???ril??r, bir az gara?y?...")
+
     try:
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-    finally:
-        await bot.session.close()
+        # Loop-y? i?inde agyr i?i a?ratyn potokda i?letmek
+        loop = asyncio.get_event_loop()
+        file_path, title = await loop.run_in_executor(None, download_media, url, "video")
 
+        if file_path and os.path.exists(file_path):
+            await wait_msg.edit_text("?? Telegram-a ??klen??r...")
+            
+            # Wideo ugratmak
+            video_file = FSInputFile(file_path)
+            
+            # A?dym sorag knopkalaryny d?retmek
+            builder = InlineKeyboardBuilder()
+            builder.button(text="Hawa ??", callback_data=f"aud_yes|{url[:50]}")
+            builder.button(text="?ok ?", callback_data="aud_no")
+            
+            await message.answer_video(
+                video=video_file, 
+                caption=f"?? <b>{title}</b>\n\nVideodaky a?dymy hem g???rip bere?inmi?",
+                parse_mode="HTML",
+                reply_markup=builder.as_markup()
+            )
+            await wait_msg.delete()
+            
+            # Fa?ly serwerden pozmak
+            os.remove(file_path)
+        else:
+            await wait_msg.edit_text("? Mediany g???rip bolmady. Linki barla?.")
+
+    except Exception as e:
+        print(f"Error: {e}")
+        await wait_msg.edit_text("? ?al?y?lyk d?r?di ?a-da sa?t b?kdeldi.")
+
+# Knopka basylanda (Hawa / ?ok)
+@dp.callback_query(F.data.startswith("aud_"))
+async def handle_audio_choice(call: types.CallbackQuery):
+    data = call.data
+    
+    if data == "aud_no":
+        await call.message.edit_reply_markup(reply_markup=None)
+        await call.answer("Bolsun, a?dym g???rilmedi.")
+    else:
+        await call.message.edit_reply_markup(reply_markup=None)
+        status_msg = await call.message.answer("?? A?dym g???ril??r...")
+        
+        # Linki text-den ga?tadan almak
+        url = call.message.text or call.message.caption
+        
+        try:
+            loop = asyncio.get_event_loop()
+            # Bot entity-den linki tapmak
+            for entity in call.message.caption_entities or []:
+                if entity.type == "url":
+                    url = call.message.caption[entity.offset:entity.offset+entity.length]
+            
+            file_path, title = await loop.run_in_executor(None, download_media, url, "audio")
+            
+            if file_path and os.path.exists(file_path):
+                audio_file = FSInputFile(file_path)
+                await call.message.answer_audio(audio=audio_file, caption=f"?? {title}")
+                await status_msg.delete()
+                os.remove(file_path)
+            else:
+                await status_msg.edit_text("? A?dymy a?ratyn alyp bolmady.")
+        except Exception as e:
+            print(f"Audio Error: {e}")
+            await status_msg.edit_text("? A?dymy g???rmekde ?al?y?lyk ?ykdy.")
+            
+    await call.answer()
+
+async def main():
+    Thread(target=run_flask).start()
+    await dp.start_polling(bot, drop_pending_updates=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
