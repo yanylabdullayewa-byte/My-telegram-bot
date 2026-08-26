@@ -113,14 +113,7 @@ def get_tiktok(raw_url: str) -> tuple[str, str, str | None] | None:
                     return video_url, title, None
     except Exception as e:
         print(f"TikTok API Error: {e}")
-    response.raise_for_status()
-    payload = response.json()
-    data = payload.get("data") or {}
-    video_url = data.get("play")
-    if payload.get("code") != 0 or not video_url:
-        return None
-    return video_url, data.get("title") or "TikTok video", data.get("music")
-
+       return None
 
 def download_with_ytdlp(raw_url: str) -> tuple[Path, str, Path]:
     job_dir = Path(tempfile.mkdtemp(prefix="telegram-video-"))
